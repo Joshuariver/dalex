@@ -1,34 +1,81 @@
+# Ceteris Paribus Profiles
+# https://pbiecek.github.io/DALEX_docs/5-ceterisParibus.html
+
+
+rm(list=ls())
+
 library("DALEX")
-apartments_lm_model <- lm(m2.price ~ construction.year + surface + floor + 
-                            no.rooms + district, data = apartments)
+# Linear model trained on apartments data
+model_lm <- lm(m2.price ~ construction.year + surface + floor + 
+                 no.rooms + district, data = apartments)
+
 library("randomForest")
 set.seed(59)
-apartments_rf_model <- randomForest(m2.price ~ construction.year + surface + floor + 
-                                      no.rooms + district, data = apartments)
+# Random Forest model trained on apartments data
+model_rf <- randomForest(m2.price ~ construction.year + surface + floor + 
+                           no.rooms + district, data = apartments)
 
-# First we need to prepare wrappers for these models. They are in explainer_lm and explainer_rf objects.
+library("e1071")
+# Support Vector Machinesr model trained on apartments data
+model_svm <- svm(m2.price ~ construction.year + surface + floor + 
+                   no.rooms + district, data = apartments)
 
-explainer_lm <- explain(apartments_lm_model, 
+explainer_lm <- explain(model_lm, 
                         data = apartmentsTest[,2:6], y = apartmentsTest$m2.price)
-explainer_rf <- explain(apartments_rf_model, 
+explainer_rf <- explain(model_rf, 
                         data = apartmentsTest[,2:6], y = apartmentsTest$m2.price)
+explainer_svm <- explain(model_svm, 
+                         data = apartmentsTest[,2:6], y = apartmentsTest$m2.price)
 
-mp_rf <- model_performance(explainer_rf)
+library("ceterisParibus")
 
-library("ggplot2")
-ggplot(mp_rf, aes(observed, diff)) + geom_point() + 
-  xlab("Observed") + ylab("Predicted - Observed") + 
-  ggtitle("Diagnostic plot for the random forest model") + theme_mi2()
+aplevels <- levels(apartments$district)
 
-which.min(mp_rf$diff)
-
-new_apartment <- apartmentsTest[which.min(mp_rf$diff), ]
+new_apartment <- data.frame(construction.year = 2000, 
+                            surface = 100,
+                            floor = 1L,
+                            no.rooms = 4,
+                            district = factor("Bemowo", levels = aplevels))
 new_apartment
 
-new_apartment_rf <- single_prediction(explainer_rf, observation = new_apartment)
-breakDown:::print.broken(new_apartment_rf)
+predict(model_rf, new_apartment)
 
-plot(new_apartment_rf)
+profile_rf <- ceteris_paribus(explainer_rf, observations = new_apartment)
+profile_rf
 
-new_apartment_lm <- single_prediction(explainer_lm, observation = new_apartment)
-plot(new_apartment_lm, new_apartment_rf)
+plot(profile_rf, selected_variables = "construction.year")
+
+plot(profile_rf)
+
+neighbours <- select_neighbours(apartmentsTest, observation = new_apartment, n = 10)
+head(neighbours)
+
+profile_rf_neig  <- ceteris_paribus(explainer_rf,  
+                                    observations = neighbours, 
+                                    y = neighbours$m2.price)
+
+plot(profile_rf_neig, 
+     selected_variables = "surface", size_residuals = 2,
+     color_residuals = "red", show_residuals = TRUE, show_observations = FALSE) 
+
+
+plot(profile_rf_neig, 
+     selected_variables = "surface", size_residuals = 2,
+     color_residuals = "red", show_residuals = TRUE, show_observations = FALSE) +
+  ceteris_paribus_layer(profile_rf, size = 3, alpha = 1, color = "blue",
+                        selected_variables = "surface") 
+
+plot(profile_rf_neig, 
+     selected_variables = "surface", size_residuals = 2,
+     color_residuals = "red", show_residuals = TRUE, show_observations = FALSE) +
+  ceteris_paribus_layer(profile_rf, size = 3, alpha = 1, color = "blue",
+                        selected_variables = "surface") +
+  ceteris_paribus_layer(profile_rf_neig, size = 3, alpha = 1, color = "black",
+                        aggregate_profiles = mean, show_observations = FALSE,
+                        selected_variables = "surface")
+
+
+profile_svm <- ceteris_paribus(explainer_svm, observations = new_apartment)
+profile_lm  <- ceteris_paribus(explainer_lm, observations = new_apartment)
+plot(profile_rf, profile_svm, profile_lm, color = "_label_")
+
