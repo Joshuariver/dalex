@@ -1,0 +1,416 @@
+---
+title: "Interpretability and explainability of predictive models"
+author: "Arthur Charpentier"
+format: html
+editor: visual
+---
+
+source: https://www.r-bloggers.com/2022/08/interpretability-and-explainability-of-predictive-models/
+
+## 
+
+In 400 AD, in his [Confessiones](https://faculty.georgetown.edu/jod/latinconf/11.html), Augustine wrote
+
+> quid est ergo tempus? si nemo ex me quaerat, scio; si quaerenti explicare velim, nescio
+
+that can be translated as
+
+> What then is time? If no one asks me, I know what it is. If I wish to explain it to him who asks, I do not know.
+
+To go a little further (because often, if we are asked to explain, we have some ideas), in [A Study in Scarlet](https://en.wikipedia.org/wiki/A_Study_in_Scarlet) by Sir Arthur Conan Doyle, published in 1887, we have the following exchange, between Sherlock Holmes and Doctor Watson
+
+> -- \"I wonder what that fellow is looking for?\" I asked, pointing to a stalwart, plainly-dressed individual who was walking slowly down the other side of the street, looking anxiously at the numbers. He had a large blue envelope in his hand, and was evidently the bearer of a message.\
+> -- \"You mean the retired sergeant of Marines,\" said Sherlock Holmes.
+
+then, as it turns out that the person is indeed a sergeant in the navy (as is another character in the story, someone named Arthur Charpentier), Dr. Holmes asks him for an explanation, he wants to know how he arrived at this conclusion
+
+> -- \"How in the world did you deduce that?\" I asked.\
+> -- \"Deduce what?\" said he, petulantly.\
+> -- \"Why, that he was a retired sergeant of Marines.\"\
+> -- \"I have no time for trifles,\" he answered, brusquely; then with a smile, \"Excuse my rudeness. You broke the thread of my thoughts; but perhaps it is as well. So you actually were not able to see that that man was a sergeant of Marines?\"\
+> -- \"No, indeed.\"\
+> -- \"It was easier to know it than to explain why I knew it. If you were asked to prove that two and two made four, you might find some difficulty, and yet you are quite sure of the fact. Even across the street I could see a great blue anchor tattooed on the back of the fellow\'s hand. That smacked of the sea. He had a military carriage, however, and regulation side whiskers. There we have the marine. He was a man with some amount of self-importance and a certain air of command. You must have observed the way in which he held his head and swung his cane. A steady, respectable, middle-aged man, too, on the face of him -- all facts which led me to believe that he had been a sergeant.\"
+
+(to be honest, it is Liu Cixin who talks about it in [The Three-Body Problem](https://en.wikipedia.org/wiki/The_Three-Body_Problem_(novel))). For the record, this is the first story of the Holmes-Watson couple, which introduces Sherlock Holmes\' working method. For those who are familiar with the short stories, this narrative approach will be widely used thereafter: Sherlock Holmes states a fact, Dr. Watson is astonished and asks for an explanation, and Sherlock Holmes explains, point by point, how he arrived at this conclusion. This is a bit like the approach we try to implement when we build a predictive model: on the basis of the [Titanic](https://en.wikipedia.org/wiki/Titanic) data, if we predict that such and such a person will die, and that such and such a person will survive, we want to understand why the model arrives at this conclusion.
+
+Beyond the general reflections, from \"linear models are not as simple to interpret and explain as they seem\" to \"one can explain without being able to predict, and predict without being able to explain\", I wanted to come back to the classical mathematical notions used when we talk about the explainability of predictive models. On the basis of the Titanic data,
+
+```{r}
+library(DALEX)
+data("titanic")
+titanic = DALEX::titanic
+idx = which((is.na(titanic$age))+
+(is.na(titanic$sibsp))+
+(is.na(titanic$parch))==0)
+titanicNA = titanic[idx,]
+```
+
+we will consider six different models to predict survivorship
+
+-   a logistic GLM and a GAM version (with a spline on the age)
+
+-   a classification tree CART and a random forest RF
+
+-   a boosting model GBM and a support vector machine SVM
+
+```{r}
+library(splines)
+titanic_glm = glm(survived == "yes" ~ gender + age + class +
+  sibsp  + parch + embarked, titanicNA, family="binomial")
+titanic_gam = glm(survived == "yes" ~ gender + bs(age) + class +
+  sibsp  + parch + embarked, titanicNA, family="binomial")
+library("rpart")
+titanic_cart = rpart(survived == "yes" ~ class + gender + age +
+  sibsp + parch  + embarked, data = titanicNA)
+library("gbm")
+set.seed(1234)
+titanic_gbm = gbm(survived == "yes" ~ class + gender + age +
+  sibsp + parch  + embarked, data = titanicNA, n.trees = 15000, 
+  distribution = "bernoulli")
+library("randomForest")
+set.seed(1234)
+titanic_rf = randomForest(survived ~ class + gender + age +
+  sibsp + parch + embarked, data = titanicNA)
+library("e1071")
+titanic_svm = svm(survived == "yes" ~ class + gender + age +
+  sibsp + parch + embarked, data = titanicNA, 
+  type = "C-classification", probability = TRUE)
+```
+
+and to try to explain, we will see local methods, with two fictitious passengers, Kate and Leonardo (as I had already done [in the past](https://freakonometrics.hypotheses.org/60575)).
+
+```{r}
+newbase = data.frame(
+  class = factor(c("1st","3rd"), 
+        levels = c("1st", "2nd", "3rd",
+        "deck crew", "engineering crew",
+        "restaurant staff", "victualling crew")), 
+  gender = factor(c("female","male"), levels = c("female", "male")),
+  age = c(17,20),
+  sibsp = c(1,0),
+  parch = c(2,0),
+  embarked = factor(c("Southampton","Southampton"), 
+        levels = c("Belfast","Cherbourg","Queenstown","Southampton")))
+rownames(newbase) = c("Winslet, Miss. Kate","DiCaprio, Mr. Leonardo")
+```
+
+We will use here, to illustrate, the [DALEX](https://cran.r-project.org/web/packages/DALEX/index.html) R package, by Przemyslaw Biecek, detailed in the book writen with Tomasz Burzykowski, [Explanatory model analysis](https://www.taylorfrancis.com/books/mono/10.1201/9780429027192/explanatory-model-analysis-przemyslaw-biecek-tomasz-burzykowski),
+
+```{r}
+titanic_cart_exp = DALEX::explain(model = titanic_cart, 
+          data = titanicNA[, -9],
+          y = titanicNA$survived == "yes", 
+          label = "cart", 
+          type = "classification")
+titanic_glm_exp = DALEX::explain(model = titanic_glm, 
+          data = titanicNA[, -9],
+          y = titanicNA$survived == "yes", 
+          label = "glm", 
+          type = "classification")
+titanic_gam_= DALEX::explain(model = titanic_gam, 
+          data = titanicNA[, -9],
+          y = titanicNA$survived == "yes", 
+          label = "gam", 
+          type = "classification")
+titanic_rf_exp = DALEX::explain(model = titanic_rf, 
+          data = titanicNA[, -9],
+          y = titanicNA$survived == "yes",
+          label = "rf") 
+titanic_gbm_exp = DALEX::explain(model = titanic_gbm,
+          data = titanicNA[, -9],
+          y = titanicNA$survived == "yes",
+          label = "gbm")
+titanic_svm_exp = DALEX::explain(model = titanic_svm, 
+          data = titanicNA[, -9],
+          y = titanicNA$survived == "yes", 
+          label = "svm")
+```
+
+But first, let us return to the distinction between ceteris paribus and mutatis mutandis. **Ceteris paribus** (or rather ceteris paribus sic stantibus) is the Latin phrase that translates by \"all things being equal\".  **Mutatis mutandis** translates as \"what should be changed has been changed\" or \"once the necessary changes have been made\". This distinction will be important later on. To illustrate, consider a simple model obesity=m(weight,height)obesity=m(weight,height). In the first case, to understand the impact of the weight on obesity, we will consider m(weight=x+dx,taille=y)−m(weight=x,taille=y)m(weight=x+dx,taille=y)−m(weight=x,taille=y) as on the picture below
+
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/ceteris-fr.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+In the second case, we want to take into account the fact that an individual of different weight would probably also be of different height, and so we should look atm(weight=x+dx,taille=y+ϵ)−m(weight=x,taille=y)m(weight=x+dx,taille=y+ϵ)−m(weight=x,taille=y)as on the picture below
+
+![](https://i2.wp.com/freakonometrics.hypotheses.org/files/2022/08/mutandis-fr.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+where ϵϵ would integrate, somehow, the correlation between the two component.
+
+To formalize this, consider a Gaussian model, that is two random variables (X1,X2)(X1,X2) (that might be the height and the weight, for instance) such that (X1X2)∼N((μ1μ2),(σ21rσ1σ2rσ1σ2σ22))(X1X2)∼N((μ1μ2),(σ12rσ1σ2rσ1σ2σ22)). In that case, consider (X⊥1,X⊥2)(X1⊥,X2⊥) an independent version of (X1,X2)(X1,X2) (i.e. same marginal distributions, but independent). The (classical) conditional expectation can be written EX1[X2|x∗1]=μ2+rσ2σ1(x∗1−μ1)EX1\[X2\|x1∗\]=μ2+rσ2σ1(x1∗−μ1)and we will use the notationEX⊥1[X2|x∗1]=E[X2]=μ2EX1⊥\[X2\|x1∗\]=E\[X2\]=μ2in the case where components are independent.
+
+This notation with the conditional random variable appearing as an index might be surprising, but here, EX1EX1 means that the expected value is not under PP, but underPX2|X1PX2\|X1, also denoted, sometimes EPX2|X1EPX2\|X1. I will use it for convenience here. From a statistical perspective, the later one (with independent variables), it means that EX⊥1[h(X1,X2)|x∗1]≈1n∑ni=1h(x∗1,xi,2)EX1⊥\[h(X1,X2)\|x1∗\]≈1n∑i=1nh(x1∗,xi,2) while the true classical conditional expectation should be understood as the average in the neighborhood of x∗1x1∗ and therefore EX1[h(X1,X2)|x∗1]≈1∥Vϵ(x∗1)∥∑i∈Vϵ(x∗1)h(x∗1,xi,2)EX1\[h(X1,X2)\|x1∗\]≈1‖Vϵ(x1∗)‖∑i∈Vϵ(x1∗)h(x1∗,xi,2)where Vϵ(x∗1)Vϵ(x1∗) precisely denotes the neighborhood, i.e.Vϵ(x∗1)={i:|xi,1−x∗1|≤ϵ}Vϵ(x1∗)={i:\|xi,1−x1∗\|≤ϵ}
+
+Before going forward, I want to stress here that we will talk about \"local\" explanability when we try to explain a single prediction, given by model mm for some very specific individual (denoted x∗x∗) while the \"global\" approach usually means that we want to quantify variable importance in model mm (and possibly, consider functions of x∗jxj∗).
+
+-   **Global Approach: variable importance**
+
+Variable importance is a first tool to understand which variables are important in a predictive modelmm. [Fisher et al. (2019) ](https://arxiv.org/abs/1801.01489)suggested the following definition : given a loss function ℓℓ, defineVIj=E[ℓ(Y,m(X−j,Xj))]−E[ℓ(Y,m(X−j,X⊥j))]VIj=E\[ℓ(Y,m(X−j,Xj))\]−E\[ℓ(Y,m(X−j,Xj⊥))\]and the empirical version isVIˆj=1n∑ni=1ℓ(yi,m(xi,−j,xi,j))−ℓ(yi,m(xi,−j,x~i,j))VI\^j=1n∑i=1nℓ(yi,m(xi,−j,xi,j))−ℓ(yi,m(xi,−j,x\~i,j))for some permutation x~jx\~j of vector xjxj.
+
+```{r}
+vip_glm_999 = model_parts(explainer = titanic_glm_exp,
+       loss_function = 1-AUC,
+       B = 999,
+       type = "difference")
+plot(vip_glm_999)
+```
+
+-   **Local Approach : ICE or ceteris paribus\
+    **
+
+[Goldstein et al. (2015)](https://arxiv.org/abs/1309.6392) introduced the concept of ICE (individual conditional expectation), which is simply the functional ceteris paribusz↦mx∗,j(z)=m(x∗−j,z)=m(x∗1,⋯,x∗j−1,z,x∗j+1,⋯,x∗p)z↦mx∗,j(z)=m(x−j∗,z)=m(x1∗,⋯,xj−1∗,z,xj+1∗,⋯,xp∗) in a given point x∗∈Xx∗∈X  (with a small abuse of notation on the indices, since one will note abusively (x∗−j,x∗j)(x−j∗,xj∗) whatever position of index jj).\
+
+We can then look at δmx∗,j(z)=mx∗,j(z)–mx∗,j(x∗j)δmx∗,j(z)=mx∗,j(z)--mx∗,j(xj∗), or more interestingly, The mean absolute deviation of the jj-th variable, in x∗x∗, is dmj(x∗)dmj(x∗) dmj(x∗)=E[|δmx∗,j(Xj)|]=E[|m(x−j,Xj)–m(x−j,x∗j)|]dmj(x∗)=E\[\|δmx∗,j(Xj)\|\]=E\[\|m(x−j,Xj)--m(x−j,xj∗)\|\]The empirical mean absolute deviation of the jj-th variable en x∗x∗, estdmˆj(x∗)=1n∑i=1n|m(x−j,xi,j)−m(x−j,x∗j)|dm\^j(x∗)=1n∑i=1n\|m(x−j,xi,j)−m(x−j,xj∗)\|For example, just for Kate, and just for logistic regression, the code looks like
+
+```{r}
+cp_titanic_glm = predict_profile(explainer = titanic_glm_exp, new_observation = newbase[1,])
+plot(cp_titanic_glm, variables = "age")
+```
+
+Here, for our 6 models (we simply replace the model to be explained in the previous code), we look at the age evolution curve, for Kate (what would have happened if Kate did not have an age x∗j=17xj∗=17 but xx -- all other things being equal, ceteris paribus)
+
+For example, just for Kate, and just for logistic regression, the code looks like
+
+![](https://i2.wp.com/freakonometrics.hypotheses.org/files/2022/08/cp_titanic_1.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+or for the class (what would have been the survival probability if Kate was not in class x∗j=1xj∗=1 (first class) but in class xx -- everything else remaining unchanged (ceteris paribus).
+
+```{r}
+plot(cp_titanic_glm, variables = "class")
+```
+
+-   **Local Approach : additive (break-point) decomposition\
+    **
+
+For a standard linear modelmˆ(x∗)=βˆ0+βˆ⊤x∗=βˆ0+∑pj=1βˆjx∗j=y¯¯¯+∑pj=1βˆj(x∗j−x¯¯¯j)=vj(x∗)m\^(x∗)=β\^0+β\^⊤x∗=β\^0+∑j=1pβ\^jxj∗=y¯+∑j=1pβ\^j(xj∗−x¯j)⏟=vj(x∗)\
+where vj(x∗)vj(x∗) will be seen as the  contribution of variable jj in the prediction, for x∗x∗.
+
+More generally, [Robnik-Šikonja and Kononenk (1997](https://dl.acm.org/doi/10.5555/645526.657141), [2003](https://link.springer.com/article/10.1023/A:1025667309714) and [2008](https://ieeexplore.ieee.org/document/4407709)), defined the contribution of the jj-th variable, in x∗x∗, asvj(x∗)=m(x∗1,⋯,,x∗j−1,x∗j,x∗j+1,⋯,x∗p)–EX⊥−j[m(x∗1,⋯,x∗j−1,Xj,x∗j+1,⋯,x∗p)]vj(x∗)=m(x1∗,⋯,,xj−1∗,xj∗,xj+1∗,⋯,xp∗)--EX−j⊥\[m(x1∗,⋯,xj−1∗,Xj,xj+1∗,⋯,xp∗)\]such thatm(x∗)=E[m(X)]+∑pj=1vj(x∗)m(x∗)=E\[m(X)\]+∑j=1pvj(x∗)therefore, for a linear model vj(x∗)=βj(x∗j–EX⊥−j[Xj])vj(x∗)=βj(xj∗--EX−j⊥\[Xj\]) and vˆj(x∗)=βˆj(x∗j−x¯¯¯j)v\^j(x∗)=β\^j(xj∗−x¯j).
+
+But more generallyvj(x∗)=m(x∗)–EX⊥−j[m(x∗−j,Xj))]vj(x∗)=m(x∗)--EX−j⊥\[m(x−j∗,Xj))\] where we can write m(x∗)m(x∗) as EX[m(x∗)]EX\[m(x∗)\], i.e.\
+vj(x∗)={EX[m(X)∣∣x∗1,⋯,x∗p]−EX⊥−j[m(X)∣∣x∗1,⋯,x∗j−1,x∗j+1,⋯,x∗p]EX[m(X)∣∣x∗]–EX⊥−j[m(X)∣∣x∗−j]vj(x∗)={EX\[m(X)\|x1∗,⋯,xp∗\]−EX−j⊥\[m(X)\|x1∗,⋯,xj−1∗,xj+1∗,⋯,xp∗\]EX\[m(X)\|x∗\]--EX−j⊥\[m(X)\|x−j∗\]
+
+The contribution of the jj-th variable, in x∗x∗, usγbdj(x∗)=vj(x∗)=EX[m(X)∣∣x∗]−EX⊥−j[m(X)∣∣x∗−j]γjbd(x∗)=vj(x∗)=EX\[m(X)\|x∗\]−EX−j⊥\[m(X)\|x−j∗\]This is clearly a ceteris paribus approach, as we can see below (where I will simply draw a couple of pictures). Consider a set  XX such that 0≤x2≤x1≤10≤x2≤x1≤1. Below, points can be in the blue region, not in the red one,
+
+![](https://i2.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp-simu-20-1.png?zoom=1.25&resize=292%252C292&ssl=1){alt=""}
+
+We want to understand the prediction given by the least squares regression, for one of the points, i.e. to get a break-down decomposition of yˆy\^
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp-simu-20-2.png?zoom=1.25&resize=318%252C318&ssl=1){alt=""}
+
+First, we compute the average value of yy
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp-simu-20-9.png?zoom=1.25&resize=306%252C306&ssl=1){alt=""}
+
+Then, we will compute averages, ceteris paribus, the first one being \\displaystyle{\
+\\mathbb{E}\_{X_1\^\\perp}\\big\[m(x_1\^\*,X_2)\\big\] \\approx \\frac{1}{n}\\sum\_{i=1}\^n m(x_1\^\*,x\_{2,i})}where the sum is obtained when x∗1x1∗ is fixed (why not)
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp-simu-20-10.png?zoom=1.25&resize=294%252C294&ssl=1){alt=""}
+
+and the second one isEX⊥2[m(X1,x∗2)]≈1n∑i=1nm(x1,i,x∗2)EX2⊥\[m(X1,x2∗)\]≈1n∑i=1nm(x1,i,x2∗)i.e. we sum when x∗2x2∗ is fixed, which is rather odd in this example since we consider some pseudo-observations (x1,i,x∗2)(x1,i,x2∗) that are clearly in the red area, where we should have no points...
+
+![](https://i2.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp-simu-20-11.png?zoom=1.25&resize=282%252C282&ssl=1){alt=""}
+
+In the last two cases, the contribution will be the conditional mean, from which the global mean is subtracted (this is the height that can be seen in yellow). And we can show that the mean, to which we add the two contributions, gives the predicted value.
+
+On the Titanic data, for Kate and just the logistic regression
+
+```{r}
+ bd_glm_kate = DALEX::predict_parts(explainer = titanic_glm_exp, 
+new_observation = newbase[1,],
+type = "break_down",
+order = c("gender","class", "age", 
+"parch", "sibsp", "embarked"))
+plot(bd_glm_kate)
+```
+
+To go a little further, note that we can define the contribution of the jj-th conditional variable to a group of variables S⊂{1,⋯,p}∖{j}S⊂{1,⋯,p}∖{j}, in x∗x∗, estΔj|S(x∗)={EX⊥S,X⊥j[m(X)∣∣x∗S,x∗j]–EX⊥S[m(X)∣∣x∗S]EX⊥S∪{j}[m(X)∣∣x∗S∪{j}]−EX⊥S[m(X)∣∣x∗S]Δj\|S(x∗)={EXS⊥,Xj⊥\[m(X)\|xS∗,xj∗\]--EXS⊥\[m(X)\|xS∗\]EXS∪{j}⊥\[m(X)\|xS∪{j}∗\]−EXS⊥\[m(X)\|xS∗\]so that vj(x∗)=Δj|{1,2,⋯,p}∖{j}=Δj|−jvj(x∗)=Δj\|{1,2,⋯,p}∖{j}=Δj\|−j.
+
+More generally, define also ΔK|S(x∗)ΔK\|S(x∗), or Δi,j|S(x∗)Δi,j\|S(x∗) (which would allow further analysis of possible interractions, but we\'ll pass quickly).
+
+-   **Approche locale : la décomposition de Shapley**
+
+As a reminder, in a (very) general context, ∀S⊂{1,…,p}∀S⊂{1,...,p}, we have a val(S)val(S) function, and we are looking for ϕj(val)ϕj(val) contributions, checking some criteria
+
+-   efficiency: ∑j=1pϕj(val)=val({1,…,p})∑j=1pϕj(val)=val({1,...,p})
+
+-   symmetry: if val(S∪{j})=val(S∪{k})val(S∪{j})=val(S∪{k}), ∀S⊆{1,…,p}∖{j,k}∀S⊆{1,...,p}∖{j,k}, then ϕj=ϕkϕj=ϕk
+
+-   dummy: if val(S∪{j})=val(S)val(S∪{j})=val(S), ∀S⊆{1,…,p}∀S⊆{1,...,p}, then ϕj=0ϕj=0
+
+-   additivity: if val(1)val(1) and val(2)val(2) have the decompositions ϕ(1)ϕ(1) and ϕ(2)ϕ(2), then val(1)+val(2)val(1)+val(2) has the decomposition ϕ(1)+[latex]ϕ(2)ϕ(1)+\[latex\]ϕ(2)
+
+[Shapley (1953)](https://www.degruyter.com/document/doi/10.1515/9781400881970-018/html) proved that the ony functions satisfying those criteria areϕj(val)=∑S⊆{1,…,p}∖{j}|S|!(p−|S|−1)!p!(val(S∪{j})−val(S))ϕj(val)=∑S⊆{1,...,p}∖{j}\|S\|!(p−\|S\|−1)!p!(val(S∪{j})−val(S))or encoreϕj(val)=1p∑S⊆{1,…,p}∖{j}(p−1|S|)−1(val(S∪{j})−val(S))ϕj(val)=1p∑S⊆{1,...,p}∖{j}(p−1\|S\|)−1(val(S∪{j})−val(S))
+
+Here, we will use val(S)=EX⊥S[m(X)∣∣x∗S]val(S)=EXS⊥\[m(X)\|xS∗\]
+
+The contribution of the jj-th variable, in x∗x∗, is thereforeγshapj(x∗)=1p∑S⊆{1,…,p}∖{j}(p−1|S|)−1Δj|S(x∗)γjshap(x∗)=1p∑S⊆{1,...,p}∖{j}(p−1\|S\|)−1Δj\|S(x∗)
+
+-   local accuracy: ∑j=1pγshapj(x∗)=m(x∗)−E[m(X)]∑j=1pγjshap(x∗)=m(x∗)−E\[m(X)\]
+
+-   symmetry: if jj and kk are exchangeable, γshapj(x∗)=γshapk(x∗)γjshap(x∗)=γkshap(x∗)\
+    \\item dummy: if XjXj does not contribute, γshapj(x∗)=0γjshap(x∗)=0
+
+-   additivity: if m=m1+m2m=m1+m2, γshapj(x∗;m)=γshapj(x∗;m1)+γshapj(x∗;m2)γjshap(x∗;m)=γjshap(x∗;m1)+γjshap(x∗;m2)
+
+Observe that if p=2p=2, γshap1(x∗)=Δ1|2(x∗)=γbd1(x∗)γ1shap(x∗)=Δ1\|2(x∗)=γ1bd(x∗)
+
+And if p≫2p≫2, lthe calculations can quickly become heavy. [Štrumbelj and Kononenko (2014) ](https://link.springer.com/article/10.1007/s10115-013-0679-x)have proposed a method using simulations. From x∗x∗ and an individual xixi, we construct x~j={x∗j with probability 1/2xi,j with probability 1/2x\~j={xj∗ with probability 1/2xi,j with probability 1/2and {x∗+i=(x~1,⋯,x∗j,⋯,x~p)x∗−i=(x~1,⋯,xi,j,⋯,x~p){xi∗+=(x\~1,⋯,xj∗,⋯,x\~p)xi∗−=(x\~1,⋯,xi,j,⋯,x\~p)and we note that γshapj(x∗)≈m(x∗+i)−m(x∗−i)γjshap(x∗)≈m(xi∗+)−m(xi∗−), and thusγˆshapj(x∗)=1s∑i,⋯,n}m(x∗+i)−m(x∗−i)γ\^jshap(x∗)=1s∑i,⋯,n}m(xi∗+)−m(xi∗−)\
+(we draw at each step an individual ii in the training dataset, ss times).
+
+```{r}
+shap_glm = DALEX::predict_parts(explainer = titanic_glm_exp, 
+new_observation = newbase[1,],
+type = "shap",
+order = c("gender","class", "age", 
+"parch", "sibsp", "embarked"))
+
+plot(shap_glm, show_boxplots=FALSE)
+```
+
+```{r}
+plot(shap_glm, show_boxplots=TRUE)
+```
+
+![](https://i0.wp.com/freakonometrics.hypotheses.org/files/2022/08/shape_B_titanic_1.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+Observe that instead of x∗x∗, we can consider all points in the training set
+
+![](https://i0.wp.com/freakonometrics.hypotheses.org/files/2022/08/shap-titanic.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+And we can actually plot the scatterplot {(xi,j,γshapj(xi))}{(xi,j,γjshap(xi))} (on the training set) also called \"Shapley Dependence Plots\".
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/shap-titanic-age.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+or
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/shap-titanic-age-class.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+Instead of a local vision (at point x∗x∗) it is actually possible to get a global one..
+
+[Štrumbelj and Kononenko (2014)](https://link.springer.com/article/10.1007/s10115-013-0679-x), and then [Lundberg and Lee (2017)](https://arxiv.org/abs/1705.07874) suggested to use the Shapley decomposition to compute a global feature importance function. Shapley Feature Importance is simplyγshapj=1n∑ni=1γshapj(xi)γjshap=1n∑i=1nγjshap(xi)
+
+-   **Local Approach : LIME** (**Local Interpretable Model-Agnostic Explanations)**
+
+Give a (black box) model mm defined on XX, [Ribeiro, Singh and Guestrin (2016)](https://arxiv.org/abs/1602.04938?context=cs) suggested to solveargminme∈E{ℓx∗(m,me)}+P(me)argminme∈E{ℓx∗(m,me)}+P(me)where
+
+-   EE is a subset of models X→RX→R that are supposed to be \"explainable\" (like a linear model, or some tree), or possibly X~→RX\~→R, where X~X\~ is a subspace of XX (called space for interpretable representation)
+
+-   ℓx∗ℓx∗ is a loss function, defined on the neigborhood of x∗x∗
+
+-   PP is a penalty function, increasing in the complexity of the model
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/banana.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+![](https://i2.wp.com/freakonometrics.hypotheses.org/files/2022/08/banana_explication-1024x511.png?zoom=1.25&resize=578%252C288&ssl=1){alt=""}
+
+(I will mention here some old [slides](http://freakonometrics.free.fr/LAUSANNE_2019_2.pdf) used a few years ago to explain models on pictures). Here [pictures](https://github.com/aparande/Fruit-Classification) are our indivudals xx in dimension 3000030000 (we have 100×100100×100 pixels pictures, in coulors, so that the true dimension is three times more. We clearly see on the top right that the first step of the LIME procedure is to simplify our large dimensional individual, by creating a 6×6× object. This approach creates surrogate models (locally)
+
+```{r}
+res_glm_1 = predict_diagnostics(explainer = titanic_glm_exp, 
+    new_observation = newbase[1,],
+    neighbors = 25)
+plot(res_glm_1)
+```
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/titanic-ks-1.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+with the overall residuals below, in green, and for the neighbors of x∗x∗ on top, in blue.
+
+We can also plot the ceteris paribus plot of x∗x∗, e.g. for the age, and the ones of the neighbors (here Kate\'s neighbors), with residuals either in red (negative) or green (positive)
+
+```{r}
+res_glm_1_age = predict_diagnostics(explainer = titanic_glm_exp, 
+    new_observation = newbase[1,],
+    neighbors = 25,
+    variables = "age")
+plot(res_glm_1_age)
+```
+
+![](https://i2.wp.com/freakonometrics.hypotheses.org/files/2022/08/titanic_LS_age_1.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+-   **Global Approach : Partial dependence plot**
+
+The Partial Dependence Plot of variable jj is function Xj→RXj→Rpj(x∗j)=EX⊥j[m(X)|x∗j]pj(xj∗)=EXj⊥\[m(X)\|xj∗\]and its empirical version ispˆj(x∗j)=1n∑ni=1m(x∗j,xi,−j)=1n∑ni=1mxi(x∗j)ceteris paribus
+
+```{r}
+pdp_glm = model_profile(explainer = titanic_glm_exp, 
+variables = "age")
+plot(pdp_glm)
+```
+
+![](https://i2.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp_age_0.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+
+where we add a few ceteris paribus curves (the average curve is still the large blue one)
+
+![](https://i0.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp_age_1.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+Note that instead of the average overallpˆj(x∗j)=1n∑ni=1m(x∗j,xi,−j)=1n∑ni=1mxi(x∗j)ceteris paribusp\^j(xj∗)=1n∑i=1nm(xj∗,xi,−j)=1n∑i=1nmxi(xj∗)⏟ceteris paribusit is possible to consider averages on subsets, e.g. for men and womenpˆj(x∗j)=1nk∑i∈groupkmxi(x∗j)ceteris paribus
+
+```{r}
+pdp_glm = model_profile(explainer = titanic_glm_exp, 
+variables = "age", groups = "gender")
+plot(pdp_glm)
+```
+
+![](https://i0.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp_age_genre.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+or grouped in two classes in an unsupervised way (the subgroups are here constituted by models, one thus has no coherence between the drawings)
+
+```{r}
+pdp_glm = model_profile(explainer = titanic_glm_exp, 
+variables = "age", k = 3)
+plot(pdp_glm)
+```
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/pdp_age_hclust_2.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+-   **Global Approach : Local dependence plot**
+
+Notice that pj(x∗j)=EX⊥j[m(X)|x∗j]pj(xj∗)=EXj⊥\[m(X)\|xj∗\] did not take into account the fact that, generally, (X−j|Xj)≠LX−j(X−j\|Xj)≠LX−j. Therefore, instead of the previous ceteris paribus approach, used to get PDPs, we can consider a mutandis mutatis approach.
+
+[Apley and Zhu (2020)](https://arxiv.org/abs/1612.08468) definedℓj(x∗j)=EXj[m(X)|x∗j]ℓj(xj∗)=EXj\[m(X)\|xj∗\]pour l\'approche théorique, et la version empirique est alorsℓˆj(x∗j)=1card(V(x∗j))∑i∈V(x∗j)m(x∗j,xi,−j)ℓ\^j(xj∗)=1card(V(xj∗))∑i∈V(xj∗)m(xj∗,xi,−j)où V(x∗j)={i:d(xi,j,x∗j)≤ϵ}V(xj∗)={i:d(xi,j,xj∗)≤ϵ} est le voisinage, ouℓˆj(x∗j)=1∑iωi(x∗j)∑ni=1ωi(x∗j)m(x∗j,xi,−j)ℓ\^j(xj∗)=1∑iωi(xj∗)∑i=1nωi(xj∗)m(xj∗,xi,−j)où ωi(x∗j)=Kh(x∗j−xi,j)ωi(xj∗)=Kh(xj∗−xi,j) pour une version lissée par noyau.
+
+```{r}
+loc_glm = model_profile(explainer = titanic_glm_exp, variables = "age", type="conditional")
+plot(loc_glm)
+```
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/titanic-local-dep.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+-   **Global Approach : Accumulated Local Effects\
+    **
+
+Defineaj(x∗j)=∫x∗j−∞EXj[∂m(xj,X−j)∂xj∣∣xj]dxjaj(xj∗)=∫−∞xj∗EXj\[∂m(xj,X−j)∂xj\|xj\]dxjwhere here∂m(xj,X−j)∂xj∂m(xj,X−j)∂xj describes the local change of the model mm from xjxj (ceteris paribus), \\(m(x_j+dx_j,\\boldsymbol{x}\_{-j})-m(x_j, \\boldsymbol{x}\_{-j}) \\approx \\displaystyle{\\frac{\\partial m(x_j,\\boldsymbol{X}\_{-j})}{\\partial{x}\_{-j}}dx_j\\)and we look at the local mean value.
+
+The empirical version isaˆj(x∗j)=α+∑k∗ju=11nu∑u:xi,j∈(au−1,au][m(ak,xi,−j)−m(ak−1,xi,−j)]a\^j(xj∗)=α+∑u=1kj∗1nu∑u:xi,j∈(au−1,au\]\[m(ak,xi,−j)−m(ak−1,xi,−j)\](where αα denotes a normalization constant that insures that E[aj(Xj)]=0E\[aj(Xj)\]=0).
+
+[Apley and Zhu (2020)](https://arxiv.org/abs/1612.08468) suggested either a discretization of XjXj (partition {(ak−1,ak]}{(ak−1,ak\]}), or a smooth version (using a kernel)
+
+```{r}
+acc_glm = model_profile(explainer = titanic_glm_exp, variables = "age", type="accumulated")
+plot(acc_glm)
+```
+
+![](https://i1.wp.com/freakonometrics.hypotheses.org/files/2022/08/titanic-accumulated.png?zoom=1.25&w=578&ssl=1){alt=""}
+
+
+
+\
+
+
+\
+
+
+
+
+
+
+
+
+
+
+
+
+
